@@ -1,0 +1,119 @@
+# ============================================================
+#  St. Paul's Hospital — Card Department
+#  Full Stack Docker Compose
+#  Services: postgres · backend · frontend · nginx · pgadmin
+# ============================================================
+
+version: "3.9"
+
+services:
+
+  # ── 1. PostgreSQL Database ─────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: stpauls_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       ${DB_NAME:-stpauls_card_dept}
+      POSTGRES_USER:     ${DB_USER:-stpauls_admin}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-StPauls@2024!}
+      PGDATA:            /var/lib/postgresql/data/pgdata
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./database/01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
+      - ./database/02_seed.sql:/docker-entrypoint-initdb.d/02_seed.sql
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-stpauls_admin} -d ${DB_NAME:-stpauls_card_dept}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── 2. Node.js Backend API ─────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: stpauls_backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV:      ${NODE_ENV:-production}
+      PORT:          4000
+      DB_HOST:       postgres
+      DB_PORT:       5432
+      DB_NAME:       ${DB_NAME:-stpauls_card_dept}
+      DB_USER:       ${DB_USER:-stpauls_admin}
+      DB_PASSWORD:   ${DB_PASSWORD:-StPauls@2024!}
+      JWT_SECRET:    ${JWT_SECRET:-change-this-secret-in-production}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-8h}
+      BCRYPT_ROUNDS: ${BCRYPT_ROUNDS:-10}
+      FRONTEND_URL:  ${FRONTEND_URL:-http://localhost}
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:4000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ── 3. React Frontend ──────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: stpauls_frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    networks:
+      - internal
+
+  # ── 4. Nginx Reverse Proxy (public entry point) ───────────
+  nginx:
+    image: nginx:alpine
+    container_name: stpauls_nginx
+    restart: unless-stopped
+    depends_on:
+      - frontend
+      - backend
+    ports:
+      - "${APP_PORT:-80}:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - internal
+      - external
+
+  # ── 5. pgAdmin (optional — disable in production) ─────────
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: stpauls_pgadmin
+    restart: unless-stopped
+    profiles: ["tools"]         # Only starts with: docker compose --profile tools up
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGADMIN_DEFAULT_EMAIL:    ${PGADMIN_EMAIL:-admin@stpauls.et}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-StPauls@2024!}
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    networks:
+      - internal
+
+networks:
+  internal:
+    driver: bridge
+  external:
+    driver: bridge
+
+volumes:
+  pg_data:
+  pgadmin_data:
